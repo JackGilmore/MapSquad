@@ -330,7 +330,9 @@
 						map.on('click', (e) => {
 							if (!ws || !currentRoom || !selectedQuestionId) return;
 							const { lat, lng } = e.latlng;
-							const label = prompt('Optional label for this pin?') || undefined;
+							const input = prompt('Optional label for this pin?');
+							if (input === null) return; // cancelled: do not add pin
+							const label = input.trim() === '' ? undefined : input;
 							ws.send(JSON.stringify({ type: 'answer-pin', questionId: selectedQuestionId, lat, lng, label }));
 						});
 						// Ensure proper layout after becoming visible
