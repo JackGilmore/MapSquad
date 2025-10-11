@@ -203,8 +203,8 @@
 							maxZoom: 19,
 							attribution: '&copy; OpenStreetMap contributors'
 						}).addTo(map);
-						// Center on Dundee (demo)
-						map.setView([56.4620, -2.9707], 13);
+						// Center on Scotland (demo)
+						map.setView([56.8, -4.2], 6);
 							// Hook address overlay inside map
 							// Re-query overlay each time to ensure it's present
 							const overlay = document.getElementById('addrOverlay');
@@ -239,9 +239,7 @@
 									async function fetchSuggestions(q) {
 										if (controller) controller.abort();
 										controller = new AbortController();
-										// Bias to Dundee area via viewbox + bounded
-										const viewbox = '-3.10,56.55,-2.75,56.39';
-										const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&viewbox=${viewbox}&bounded=1&q=${encodeURIComponent(q)}`;
+										const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=${encodeURIComponent(q)}`;
 										const resp = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
 										if (!resp.ok) return [];
 										return resp.json();
@@ -562,9 +560,14 @@
 								const newName = (input.value || '').trim();
 								if (!newName) return;
 								localStorage.setItem('mapsquad:name', newName);
-								// If connected, reconnect to propagate display name
-								if (currentRoom && ws && ws.readyState === WebSocket.OPEN) {
-									try { ws.close(); } catch {}
+								// Update any visible name inputs for consistency
+								const ni = document.getElementById('nameInput');
+								const jni = document.getElementById('joinName');
+								if (ni) ni.value = newName;
+								if (jni) jni.value = newName;
+								// Reconnect to propagate display name (even if socket isn't currently open)
+								if (currentRoom) {
+									try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch {}
 									connect(currentRoom, { name: newName, token: isCreator ? creatorToken : undefined });
 								}
 								const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
