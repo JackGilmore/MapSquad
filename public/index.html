@@ -10,6 +10,8 @@
 			html, body { height: 100%; }
 			#map { height: calc(100vh - 190px); }
 			.question-item { cursor: pointer; }
+			#addrOverlay { z-index: 1100; pointer-events: auto; }
+			#addrSuggest { z-index: 1200; }
 		</style>
 	</head>
 	<body>
@@ -124,7 +126,17 @@
 									<div class="form-text">Click the map to drop an answer pin for the selected question.</div>
 									<button id="clearPins" class="btn btn-sm btn-outline-danger d-none" type="button">Clear Pins</button>
 								</div>
-								<div id="map" class="rounded border"></div>
+								<div id="map" class="rounded border position-relative">
+									<div id="addrOverlay" class="position-absolute top-0 start-50 translate-middle-x p-2" style="z-index: 1100; pointer-events: none;">
+										<div id="addrBox" class="bg-white rounded shadow p-2" style="max-width: 600px; width: 100%; pointer-events: auto;">
+											<div class="input-group input-group-sm">
+												<input id="addrInput" class="form-control" placeholder="Search address (e.g. Dundee, DD1)" autocomplete="off" />
+												<button id="addrSubmit" class="btn btn-outline-secondary" type="button">Add</button>
+											</div>
+											<div id="addrSuggest" class="list-group mt-1 d-none" style="max-height: 220px; overflow: auto;"></div>
+										</div>
+									</div>
+								</div>
 				</div>
 			</div>
 		</div>
@@ -163,7 +175,103 @@
 						}).addTo(map);
 						// Center on Dundee (demo)
 						map.setView([56.4620, -2.9707], 13);
-						// Current location control
+							// Hook address overlay inside map
+							// Re-query overlay each time to ensure it's present
+							const overlay = document.getElementById('addrOverlay');
+							if (overlay) {
+								// Prevent map drag/scroll when interacting with overlay
+								const box = document.getElementById('addrBox');
+								if (box && window.L && L.DomEvent) {
+									try {
+										L.DomEvent.disableClickPropagation(box);
+										L.DomEvent.disableScrollPropagation(box);
+									} catch {}
+								}
+								overlay.addEventListener('mouseenter', () => { map.scrollWheelZoom.disable(); map.dragging.disable(); });
+								overlay.addEventListener('mouseleave', () => { map.scrollWheelZoom.enable(); map.dragging.enable(); });
+								const input = document.getElementById('addrInput');
+								const list = document.getElementById('addrSuggest');
+								const submitBtn = document.getElementById('addrSubmit');
+								if (input && list) {
+									let items = [];
+									let activeIndex = -1;
+									let controller = null;
+									function clearList() {
+										list.innerHTML = '';
+										list.classList.add('d-none');
+										items = [];
+										activeIndex = -1;
+									}
+									function setActive() {
+										items.forEach((el, idx) => el.classList.toggle('active', idx === activeIndex));
+										if (items[activeIndex]) items[activeIndex].scrollIntoView({ block: 'nearest' });
+									}
+									async function fetchSuggestions(q) {
+										if (controller) controller.abort();
+										controller = new AbortController();
+										// Bias to Dundee area via viewbox + bounded
+										const viewbox = '-3.10,56.55,-2.75,56.39';
+										const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&viewbox=${viewbox}&bounded=1&q=${encodeURIComponent(q)}`;
+										const resp = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
+										if (!resp.ok) return [];
+										return resp.json();
+									}
+									async function choose(r) {
+										clearList();
+										if (!ws || !currentRoom || !selectedQuestionId) { alert('Select a question first.'); return; }
+										const lat = parseFloat(r.lat), lng = parseFloat(r.lon);
+										if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+										map.flyTo([lat, lng], 15);
+										ws.send(JSON.stringify({ type: 'answer-pin', questionId: selectedQuestionId, lat, lng, label: r.display_name }));
+									}
+									let debounceTimer = null;
+									input.addEventListener('input', () => {
+										const q = input.value.trim();
+										if (!q) { clearList(); return; }
+										clearTimeout(debounceTimer);
+										debounceTimer = setTimeout(async () => {
+											try {
+												const res = await fetchSuggestions(q);
+												list.innerHTML = '';
+												(res || []).forEach((r) => {
+													const a = document.createElement('a');
+													a.href = '#';
+													a.className = 'list-group-item list-group-item-action';
+													a.textContent = r.display_name;
+													a.addEventListener('mousedown', (ev) => { ev.preventDefault(); ev.stopPropagation(); });
+													a.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); choose(r); });
+													list.appendChild(a);
+												});
+												items = Array.from(list.children);
+												list.classList.toggle('d-none', items.length === 0);
+												activeIndex = -1;
+											} catch {}
+										}, 250);
+									});
+									// Stop events on overlay elements from bubbling to map
+									['click','mousedown','dblclick','pointerdown','touchstart'].forEach(evt => {
+										input.addEventListener(evt, (e) => { e.stopPropagation(); });
+										list.addEventListener(evt, (e) => { e.stopPropagation(); });
+										if (box) box.addEventListener(evt, (e) => { e.stopPropagation(); });
+									});
+									input.addEventListener('keydown', (e) => {
+										if (list.classList.contains('d-none')) return;
+										if (e.key === 'ArrowDown') { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, items.length - 1); setActive(); }
+										else if (e.key === 'ArrowUp') { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); setActive(); }
+										else if (e.key === 'Enter') { if (activeIndex >= 0 && items[activeIndex]) { e.preventDefault(); items[activeIndex].click(); } }
+									});
+									if (submitBtn) {
+										submitBtn.addEventListener('click', async () => {
+											const q = input.value.trim();
+											if (!q) return;
+											const res = await fetchSuggestions(q);
+											if (res && res.length > 0) choose(res[0]);
+										});
+									}
+								}
+							}
+
+							// Current location control
 						const LocateControl = L.Control.extend({
 							onAdd: function() {
 								const btn = L.DomUtil.create('button', 'btn btn-light btn-sm');
@@ -409,6 +517,7 @@
 						QRCode.toCanvas(joinUrl, { width: 192 }, (err, canvas) => {
 							if (!err) qrEl.appendChild(canvas);
 						});
+
 						// Auto-connect as creator
 						connect(room, { name, token });
 					});
