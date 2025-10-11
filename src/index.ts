@@ -15,6 +15,7 @@ type ClientEvent =
 	| { type: 'join'; room: string; name: string }
 	| { type: 'question'; id: string; text: string }
 	| { type: 'answer-pin'; questionId: string; lat: number; lng: number; label?: string }
+	| { type: 'clear-pins' }
 	| { type: 'list' };
 
 type ServerEvent =
@@ -22,6 +23,8 @@ type ServerEvent =
 	| { type: 'presence'; members: string[] }
 	| { type: 'question'; id: string; text: string; author: string; ts: number }
 	| { type: 'answer-pin'; questionId: string; lat: number; lng: number; label?: string; author: string; ts: number }
+	| { type: 'state'; questions: { id: string; text: string; author: string; ts: number }[]; pins: { questionId: string; lat: number; lng: number; label?: string; author: string; ts: number }[] }
+	| { type: 'pins-cleared' }
 	| { type: 'error'; message: string };
 
 interface RoomState {
@@ -36,10 +39,14 @@ type Bindings = {
 
 export class Room implements DurableObject {
 	private creatorToken?: string;
+	private questions: { id: string; text: string; author: string; ts: number }[] = [];
+	private pins: { questionId: string; lat: number; lng: number; label?: string; author: string; ts: number }[] = [];
 	constructor(private state: DurableObjectState, private env: Env) {
 		this.state.blockConcurrencyWhile(async () => {
 			// Load persisted creator token if any
 			this.creatorToken = await this.state.storage.get<string>('creatorToken');
+			this.questions = (await this.state.storage.get('questions')) || [];
+			this.pins = (await this.state.storage.get('pins')) || [];
 		});
 	}
 
@@ -79,6 +86,8 @@ export class Room implements DurableObject {
 			const members = Array.from(this.getMembers()).map(([n]) => n);
 				const roomName = roomCode || (this.state.id as any).name || this.state.id.toString();
 				server.send(JSON.stringify({ type: 'joined', room: roomName, you: name, isCreator } satisfies ServerEvent));
+				// Send initial state to the new client only
+				server.send(JSON.stringify({ type: 'state', questions: this.questions, pins: this.pins } satisfies ServerEvent));
 			// Broadcast updated presence to everyone (including the new joiner)
 			this.broadcast({ type: 'presence', members });
 			return new Response(null, { status: 101, webSocket: client });
@@ -100,13 +109,29 @@ export class Room implements DurableObject {
 						ws.send(JSON.stringify({ type: 'error', message: 'Only the room creator can ask questions.' } satisfies ServerEvent));
 						return;
 					}
-				const payload: ServerEvent = { type: 'question', id: evt.id, text: evt.text, author, ts: Date.now() };
+				const q = { id: evt.id, text: evt.text, author, ts: Date.now() };
+				this.questions.push(q);
+				this.state.storage.put('questions', this.questions).catch(() => {});
+				const payload: ServerEvent = { type: 'question', ...q } as ServerEvent;
 				this.broadcast(payload);
 				break;
 			}
 			case 'answer-pin': {
-				const payload: ServerEvent = { type: 'answer-pin', questionId: evt.questionId, lat: evt.lat, lng: evt.lng, label: evt.label, author, ts: Date.now() };
+				const p = { questionId: evt.questionId, lat: evt.lat, lng: evt.lng, label: evt.label, author, ts: Date.now() };
+				this.pins.push(p);
+				this.state.storage.put('pins', this.pins).catch(() => {});
+				const payload: ServerEvent = { type: 'answer-pin', ...p } as ServerEvent;
 				this.broadcast(payload);
+				break;
+			}
+			case 'clear-pins': {
+				if (!isCreator) {
+					ws.send(JSON.stringify({ type: 'error', message: 'Only the room creator can clear pins.' } satisfies ServerEvent));
+					return;
+				}
+				this.pins = [];
+				this.state.storage.put('pins', this.pins).catch(() => {});
+				this.broadcast({ type: 'pins-cleared' });
 				break;
 			}
 			case 'list': {

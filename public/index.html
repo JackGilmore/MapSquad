@@ -58,9 +58,12 @@
 
 							<div id="app" class="row g-3 d-none">
 						<div class="col-12 col-lg-4">
-					<div class="card">
-										<div id="qHeader" class="card-header">Questions</div>
-						<div class="card-body">
+								<div class="card">
+									<div class="card-header d-flex justify-content-between align-items-center">
+										<span id="qHeader">Questions</span>
+										<button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#qBody" aria-expanded="true" aria-controls="qBody">−</button>
+									</div>
+									<div id="qBody" class="card-body collapse show">
 									<form id="askForm" class="d-flex gap-2 mb-2">
 								<input id="qInput" class="form-control" placeholder="Ask a question..." />
 								<button class="btn btn-success" type="submit">Ask</button>
@@ -68,13 +71,21 @@
 							<ul id="qList" class="list-group"></ul>
 						</div>
 					</div>
-					<div class="card mt-3">
-						<div class="card-header">Presence</div>
-						<ul id="presence" class="list-group list-group-flush"></ul>
+								<div class="card mt-3">
+									<div class="card-header d-flex justify-content-between align-items-center">
+										<span>Presence</span>
+										<button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#presenceBody" aria-expanded="true" aria-controls="presenceBody">−</button>
+									</div>
+									<div id="presenceBody" class="collapse show">
+										<ul id="presence" class="list-group list-group-flush"></ul>
+									</div>
 					</div>
-									<div id="inviteCard" class="card mt-3 d-none">
-										<div class="card-header">Invite participants</div>
-										<div class="card-body">
+								<div id="inviteCard" class="card mt-3 d-none">
+									<div class="card-header d-flex justify-content-between align-items-center">
+										<span>Invite participants</span>
+										<button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#inviteBody" aria-expanded="true" aria-controls="inviteBody">−</button>
+									</div>
+									<div id="inviteBody" class="card-body collapse show">
 											<p class="mb-1">Room code: <strong id="inviteRoomCode"></strong></p>
 											<div id="inviteQr" class="border rounded p-2 d-inline-block"></div>
 											<div class="mt-2">
@@ -84,8 +95,11 @@
 									</div>
 				</div>
 						<div class="col-12 col-lg-8">
-					<div id="map" class="rounded border"></div>
-					<div class="form-text mt-2">Click the map to drop an answer pin for the selected question.</div>
+								<div class="d-flex justify-content-between align-items-center mb-2">
+									<div class="form-text">Click the map to drop an answer pin for the selected question.</div>
+									<button id="clearPins" class="btn btn-sm btn-outline-danger d-none" type="button">Clear Pins</button>
+								</div>
+								<div id="map" class="rounded border"></div>
 				</div>
 			</div>
 		</div>
@@ -111,6 +125,8 @@
 					// Leaflet (lazy init once app is visible)
 					let map = null;
 					const markers = {};
+					const questionSet = new Set();
+					const questionMap = new Map(); // id -> text
 					function ensureMap() {
 						if (map) return map;
 						map = L.map('map');
@@ -180,6 +196,7 @@
 											document.getElementById('landing').classList.add('d-none');
 											document.getElementById('app').classList.remove('d-none');
 											document.getElementById('askForm').classList.toggle('d-none', !isCreator);
+											document.getElementById('clearPins').classList.toggle('d-none', !isCreator);
 											document.getElementById('qHeader').innerText = `Questions (Room ${data.room})`;
 											// Show invite card for creator, with persistent QR
 											const invite = document.getElementById('inviteCard');
@@ -198,12 +215,19 @@
 											}
 											// Ensure map is ready and sized
 											ensureMap();
-					} else if (data.type === 'presence') {
+								} else if (data.type === 'presence') {
 						renderPresence(data.members);
-					} else if (data.type === 'question') {
+								} else if (data.type === 'question') {
 						addQuestion(data);
-					} else if (data.type === 'answer-pin') {
+								} else if (data.type === 'answer-pin') {
 						addPin(data);
+								} else if (data.type === 'state') {
+									// Render initial state
+									ensureMap();
+									data.questions.forEach(q => addQuestion(q));
+									data.pins.forEach(p => addPin(p));
+								} else if (data.type === 'pins-cleared') {
+									clearAllPins();
 					} else if (data.type === 'error') {
 						alert(data.message);
 					}
@@ -222,7 +246,10 @@
 			}
 
 			const qList = document.getElementById('qList');
-			function addQuestion(q) {
+							function addQuestion(q) {
+						if (questionSet.has(q.id)) return;
+						questionSet.add(q.id);
+								questionMap.set(q.id, q.text);
 				const li = document.createElement('li');
 				li.className = 'list-group-item d-flex justify-content-between align-items-center question-item';
 				li.dataset.qid = q.id;
@@ -239,13 +266,19 @@
 				li.classList.add('active');
 			}
 
-			function addPin(p) {
+					function addPin(p) {
 				const key = `${p.questionId}:${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
 				if (markers[key]) return; // de-dupe simple
 				const marker = L.marker([p.lat, p.lng]).addTo(map);
-				marker.bindPopup(`<strong>Q:</strong> ${p.questionId}<br><strong>By:</strong> ${p.author}<br>${p.label || ''}`);
+								const qText = questionMap.get(p.questionId) || p.questionId;
+								marker.bindPopup(`<strong>Question</strong>: ${qText}<br><strong>By:</strong> ${p.author}<br>${p.label || ''}`);
 				markers[key] = marker;
 			}
+
+							function clearAllPins() {
+								Object.values(markers).forEach(m => map.removeLayer(m));
+								for (const k of Object.keys(markers)) delete markers[k];
+							}
 
 					document.getElementById('createBtn').addEventListener('click', async () => {
 						const name = (nameInput.value || '').trim();
@@ -283,6 +316,13 @@
 				ws.send(JSON.stringify({ type: 'question', id, text }));
 				input.value = '';
 			});
+
+							document.getElementById('clearPins').addEventListener('click', () => {
+								if (!ws || !currentRoom || !isCreator) return;
+								if (confirm('Clear all pins for this room?')) {
+									ws.send(JSON.stringify({ type: 'clear-pins' }));
+								}
+							});
 
 							// Auto-join via URL param: prompt for name then connect
 							const params = new URLSearchParams(location.search);
