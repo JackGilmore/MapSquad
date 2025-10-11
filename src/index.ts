@@ -18,7 +18,7 @@ type ClientEvent =
 	| { type: 'list' };
 
 type ServerEvent =
-	| { type: 'joined'; room: string; you: string }
+	| { type: 'joined'; room: string; you: string; isCreator: boolean }
 	| { type: 'presence'; members: string[] }
 	| { type: 'question'; id: string; text: string; author: string; ts: number }
 	| { type: 'answer-pin'; questionId: string; lat: number; lng: number; label?: string; author: string; ts: number }
@@ -35,9 +35,11 @@ type Bindings = {
 };
 
 export class Room implements DurableObject {
+	private creatorToken?: string;
 	constructor(private state: DurableObjectState, private env: Env) {
 		this.state.blockConcurrencyWhile(async () => {
-			// No persistent state yet, transient connections only for MVP
+			// Load persisted creator token if any
+			this.creatorToken = await this.state.storage.get<string>('creatorToken');
 		});
 	}
 
@@ -58,16 +60,25 @@ export class Room implements DurableObject {
 		return pairs[Symbol.iterator]();
 	}
 
-	async fetch(request: Request): Promise<Response> {
+		async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname === '/ws') {
 			const upgrade = request.headers.get('upgrade');
 			if (upgrade !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
-			const name = url.searchParams.get('name') || 'anon-' + crypto.randomUUID().slice(0, 4);
+				const name = url.searchParams.get('name') || 'anon-' + crypto.randomUUID().slice(0, 4);
+				const token = url.searchParams.get('token') || undefined;
+				const roomCode = url.searchParams.get('room') || undefined;
+				// Claim creator role if not set and token presented
+				if (!this.creatorToken && token) {
+					this.creatorToken = token;
+					await this.state.storage.put('creatorToken', token);
+				}
+				const isCreator = !!(token && this.creatorToken && token === this.creatorToken);
 			const { 0: client, 1: server } = new WebSocketPair();
-			this.state.acceptWebSocket(server, [name]);
+				this.state.acceptWebSocket(server, [name, isCreator ? 'creator' : 'member']);
 			const members = Array.from(this.getMembers()).map(([n]) => n);
-			server.send(JSON.stringify({ type: 'joined', room: this.state.id.toString(), you: name } satisfies ServerEvent));
+				const roomName = roomCode || (this.state.id as any).name || this.state.id.toString();
+				server.send(JSON.stringify({ type: 'joined', room: roomName, you: name, isCreator } satisfies ServerEvent));
 			server.send(JSON.stringify({ type: 'presence', members } satisfies ServerEvent));
 			return new Response(null, { status: 101, webSocket: client });
 		}
@@ -81,8 +92,13 @@ export class Room implements DurableObject {
 		const tags = this.state.getTags(ws);
 		const author = tags[0] ?? 'anon';
 		if (!evt) return;
-		switch (evt.type) {
+			const isCreator = this.state.getTags(ws).includes('creator');
+			switch (evt.type) {
 			case 'question': {
+					if (!isCreator) {
+						ws.send(JSON.stringify({ type: 'error', message: 'Only the room creator can ask questions.' } satisfies ServerEvent));
+						return;
+					}
 				const payload: ServerEvent = { type: 'question', id: evt.id, text: evt.text, author, ts: Date.now() };
 				this.broadcast(payload);
 				break;
@@ -113,15 +129,29 @@ export default {
 		const url = new URL(request.url);
 		// WebSocket entry: /room/:roomId
 		const roomMatch = url.pathname.match(/^\/room\/([A-Za-z0-9_-]+)(?:\/ws)?$/);
-		if (roomMatch) {
-			const roomId = roomMatch[1];
-			const id = (env as Env & Bindings).ROOMS.idFromName(roomId);
-			const stub = (env as Env & Bindings).ROOMS.get(id);
-			// Forward to DO's /ws endpoint preserving query
-			const wsUrl = new URL('/ws' + (url.search || ''), 'https://do.local');
-			const req = new Request(wsUrl.toString(), request);
-			return stub.fetch(req);
-		}
+			if (roomMatch) {
+				const roomId = roomMatch[1];
+				const id = (env as Env & Bindings).ROOMS.idFromName(roomId);
+				const stub = (env as Env & Bindings).ROOMS.get(id);
+				// Forward to DO's /ws endpoint preserving query and passing human-readable room code
+				const wsUrl = new URL('/ws', 'https://do.local');
+				if (url.search) wsUrl.search = url.search; // copy original params
+				wsUrl.searchParams.set('room', roomId);
+				const req = new Request(wsUrl.toString(), request);
+				return stub.fetch(req);
+			}
+
+			// Create room API: POST /api/rooms -> { room, token }
+			if (url.pathname === '/api/rooms' && request.method === 'POST') {
+				const code = generateRoomCode();
+				const token = crypto.randomUUID();
+				const id = (env as Env & Bindings).ROOMS.idFromName(code);
+				const stub = (env as Env & Bindings).ROOMS.get(id);
+				// Touch the DO by opening then immediately closing a websocket with the token to claim creator
+				// Instead, simpler: do a no-op fetch to set creator via a custom endpoint could be added later.
+				// For now, return room+token and client will connect with token to claim.
+				return Response.json({ room: code, token });
+			}
 
 		// Helper endpoints
 		switch (url.pathname) {
@@ -146,3 +176,14 @@ export default {
 		return new Response('Not Found', { status: 404 });
 	},
 } satisfies ExportedHandler<Env>;
+
+	function generateRoomCode(): string {
+		// 6-char base32 Crockford-like
+		const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+		let out = '';
+		for (let i = 0; i < 6; i++) {
+			const idx = crypto.getRandomValues(new Uint32Array(1))[0] % alphabet.length;
+			out += alphabet[idx];
+		}
+		return out;
+	}

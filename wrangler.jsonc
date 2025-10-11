@@ -21,7 +21,7 @@
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_classes": ["Room"] }
+		{ "tag": "v1-sqlite", "new_sqlite_classes": ["Room"] }
 	],
 	"observability": {
 		"enabled": true
