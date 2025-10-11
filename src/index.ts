@@ -79,7 +79,8 @@ export class Room implements DurableObject {
 			const members = Array.from(this.getMembers()).map(([n]) => n);
 				const roomName = roomCode || (this.state.id as any).name || this.state.id.toString();
 				server.send(JSON.stringify({ type: 'joined', room: roomName, you: name, isCreator } satisfies ServerEvent));
-			server.send(JSON.stringify({ type: 'presence', members } satisfies ServerEvent));
+			// Broadcast updated presence to everyone (including the new joiner)
+			this.broadcast({ type: 'presence', members });
 			return new Response(null, { status: 101, webSocket: client });
 		}
 		return new Response('Not Found', { status: 404 });

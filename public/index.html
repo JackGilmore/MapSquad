@@ -284,13 +284,24 @@
 				input.value = '';
 			});
 
-					// Auto-join via URL param
-					const params = new URLSearchParams(location.search);
-					const r = params.get('room');
-					if (r) {
-						document.getElementById('landing').classList.remove('d-none');
-						roomInput.value = r;
-					}
+							// Auto-join via URL param: prompt for name then connect
+							const params = new URLSearchParams(location.search);
+							const r = params.get('room');
+							if (r) {
+								roomInput.value = r;
+								let name = localStorage.getItem('mapsquad:name') || '';
+								if (!name) {
+									name = prompt('Enter your name to join the room:') || '';
+								}
+								if (name) {
+									nameInput.value = name;
+									joinNameInput.value = name;
+									connect(r, { name });
+								} else {
+									// keep landing visible but pre-fill code
+									document.getElementById('landing').classList.remove('d-none');
+								}
+							}
 		</script>
 	</body>
 	</html>
