@@ -92,9 +92,34 @@
 												<button id="copyInvite" class="btn btn-sm btn-outline-secondary">Copy invite link</button>
 											</div>
 										</div>
+										<!-- close invite card -->
 									</div>
-				</div>
-						<div class="col-12 col-lg-8">
+										<!-- Points card -->
+										<div id="pinsCard" class="card mt-3 d-none">
+											<div class="card-header d-flex justify-content-between align-items-center">
+												<span>Points</span>
+												<div class="d-flex gap-2">
+													<button id="exportPins" class="btn btn-sm btn-outline-secondary" type="button">Export CSV</button>
+													<button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#pinsBody" aria-expanded="true" aria-controls="pinsBody">−</button>
+												</div>
+											</div>
+											<div id="pinsBody" class="card-body collapse show p-0">
+												<div class="table-responsive">
+													<table class="table table-sm table-striped mb-0">
+														<thead>
+															<tr>
+																<th scope="col" role="button" data-sort="question">Question</th>
+																<th scope="col" role="button" data-sort="author">By</th>
+																<th scope="col" role="button" data-sort="label">Label</th>
+															</tr>
+														</thead>
+														<tbody id="pinsTbody"></tbody>
+													</table>
+												</div>
+											</div>
+										</div>
+								</div>
+							<div class="col-12 col-lg-8">
 								<div class="d-flex justify-content-between align-items-center mb-2">
 									<div class="form-text">Click the map to drop an answer pin for the selected question.</div>
 									<button id="clearPins" class="btn btn-sm btn-outline-danger d-none" type="button">Clear Pins</button>
@@ -103,7 +128,6 @@
 				</div>
 			</div>
 		</div>
-
 		<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 		<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 		<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
@@ -127,6 +151,9 @@
 					const markers = {};
 					const questionSet = new Set();
 					const questionMap = new Map(); // id -> text
+					let pinsList = [];
+					let sortField = 'author';
+					let sortDir = 'asc'; // 'asc' | 'desc'
 					function ensureMap() {
 						if (map) return map;
 						map = L.map('map');
@@ -134,8 +161,8 @@
 							maxZoom: 19,
 							attribution: '&copy; OpenStreetMap contributors'
 						}).addTo(map);
-						// Center on the UK
-						map.setView([54.0, -2.0], 6);
+						// Center on Dundee (demo)
+						map.setView([56.4620, -2.9707], 13);
 						// Current location control
 						const LocateControl = L.Control.extend({
 							onAdd: function() {
@@ -215,19 +242,27 @@
 											}
 											// Ensure map is ready and sized
 											ensureMap();
+														// Show pins card for everyone once joined
+														document.getElementById('pinsCard').classList.remove('d-none');
 								} else if (data.type === 'presence') {
 						renderPresence(data.members);
 								} else if (data.type === 'question') {
 						addQuestion(data);
-								} else if (data.type === 'answer-pin') {
-						addPin(data);
+											} else if (data.type === 'answer-pin') {
+												addPin(data);
 								} else if (data.type === 'state') {
 									// Render initial state
 									ensureMap();
-									data.questions.forEach(q => addQuestion(q));
-									data.pins.forEach(p => addPin(p));
+												data.questions.forEach(q => addQuestion(q));
+												// Reset and rebuild from state
+												clearAllPins();
+												pinsList = [];
+												data.pins.forEach(p => addPin(p));
+												renderPinsTable();
 								} else if (data.type === 'pins-cleared') {
-									clearAllPins();
+												clearAllPins();
+												pinsList = [];
+												renderPinsTable();
 					} else if (data.type === 'error') {
 						alert(data.message);
 					}
@@ -266,19 +301,98 @@
 				li.classList.add('active');
 			}
 
-					function addPin(p) {
+							function addPin(p) {
 				const key = `${p.questionId}:${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
-				if (markers[key]) return; // de-dupe simple
+								if (markers[key]) return; // de-dupe simple
 				const marker = L.marker([p.lat, p.lng]).addTo(map);
 								const qText = questionMap.get(p.questionId) || p.questionId;
 								marker.bindPopup(`<strong>Question</strong>: ${qText}<br><strong>By:</strong> ${p.author}<br>${p.label || ''}`);
 				markers[key] = marker;
+								// push into list if not present by same key
+								const exists = pinsList.find((x) => x._key === key);
+								if (!exists) {
+									pinsList.push({ ...p, _key: key, question: qText });
+									renderPinsTable();
+								}
 			}
 
 							function clearAllPins() {
 								Object.values(markers).forEach(m => map.removeLayer(m));
 								for (const k of Object.keys(markers)) delete markers[k];
 							}
+
+									function renderPinsTable() {
+										const tbody = document.getElementById('pinsTbody');
+										tbody.innerHTML = '';
+										// Sort copy of array
+										const rows = [...pinsList].sort((a, b) => {
+											let va, vb;
+											switch (sortField) {
+												case 'question': va = a.question || ''; vb = b.question || ''; break;
+												case 'label': va = a.label || ''; vb = b.label || ''; break;
+												case 'author': va = a.author || ''; vb = b.author || ''; break;
+												default: va = a.author || ''; vb = b.author || ''; break;
+											}
+											if (va < vb) return sortDir === 'asc' ? -1 : 1;
+											if (va > vb) return sortDir === 'asc' ? 1 : -1;
+											return 0;
+										});
+												rows.forEach(p => {
+											const tr = document.createElement('tr');
+											tr.dataset.key = p._key;
+													tr.style.cursor = 'pointer';
+													tr.addEventListener('click', () => {
+														ensureMap();
+														map.flyTo([p.lat, p.lng], 14);
+													});
+											const cells = [
+												p.question || p.questionId,
+												p.author,
+												p.label || ''
+											];
+											cells.forEach((val) => {
+												const td = document.createElement('td');
+												td.textContent = val;
+												tr.appendChild(td);
+											});
+											tbody.appendChild(tr);
+										});
+									}
+
+											// Sorting handlers
+											document.addEventListener('click', (e) => {
+												const th = e.target.closest('th[data-sort]');
+												if (!th) return;
+												const field = th.getAttribute('data-sort');
+												if (!field) return;
+												if (sortField === field) {
+													sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+												} else {
+													sortField = field;
+													sortDir = 'asc';
+												}
+												renderPinsTable();
+											});
+
+											// CSV export
+											document.getElementById('exportPins').addEventListener('click', () => {
+												const headers = ['Question','By','Label'];
+												const lines = [headers.join(',')];
+												const fmt = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"';
+												const rows = [...pinsList];
+												rows.forEach(p => {
+													lines.push([fmt(p.question || p.questionId), fmt(p.author || ''), fmt(p.label || '')].join(','));
+												});
+												const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+												const url = URL.createObjectURL(blob);
+												const a = document.createElement('a');
+												a.href = url;
+												a.download = `mapsquad-pins-${Date.now()}.csv`;
+												document.body.appendChild(a);
+												a.click();
+												a.remove();
+												URL.revokeObjectURL(url);
+											});
 
 					document.getElementById('createBtn').addEventListener('click', async () => {
 						const name = (nameInput.value || '').trim();
